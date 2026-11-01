@@ -1,0 +1,13 @@
+# extracted features (recomputed automatically, see src/features.py)
+cache/
+
+# Python / Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.pytest_cache/
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
