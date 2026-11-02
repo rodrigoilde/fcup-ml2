@@ -81,7 +81,14 @@ Run the tests with `pytest tests/`.
 
 ## Current results (5-fold cross-validation on the dev set)
 
-_Pending: training in progress._
+Patient-level weighted accuracy, mean ± standard deviation over the 5 validation folds (first configuration, before tuning):
+
+| Model | Hierarchical rule, thresholds 0.5 | Hierarchical rule, cross-fitted thresholds | Argmax of the mean probability |
+|---|---|---|---|
+| CNN | 0.748 ± 0.068 | 0.742 ± 0.084 | 0.708 ± 0.067 |
+| RNN | 0.786 ± 0.023 | 0.779 ± 0.029 | 0.745 ± 0.053 |
+
+Predicting *Present* for everyone gives 0.499. These values are about 0.04 optimistic, because early stopping chooses the epoch on the same fold (see `main.ipynb`, Section 6). The test set is still locked.
 
 ## Team
 

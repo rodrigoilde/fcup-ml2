@@ -34,11 +34,30 @@ Status of the project and talking points for the checkpoint conversation. Everyt
 
 ## 3. Preliminary results (5-fold CV, dev set, patient level)
 
-_Pending: training in progress._
+Weighted accuracy, mean ± standard deviation over the 5 validation folds (first configuration, no tuning yet):
+
+| Aggregation rule | CNN (98k params) | RNN (115k params) |
+|---|---|---|
+| argmax of the mean probability | 0.708 ± 0.067 | 0.745 ± 0.053 |
+| hierarchical, thresholds 0.5 | **0.748 ± 0.068** | **0.786 ± 0.023** |
+| hierarchical, cross-fitted thresholds | 0.742 ± 0.084 | 0.779 ± 0.029 |
+| *reference: always Present* | *0.499* | *0.499* |
+
+Additional metrics (5 folds pooled, cross-fitted thresholds): recall Present 0.84 / 0.85, recall Unknown 0.22 / 0.30, recall Absent 0.77 / 0.84, macro-F1 0.58 / 0.63 (CNN / RNN). Confusion matrices: `results/figures/comparison_confusion.png`.
+
+What we learned from these first results (to show at the checkpoint):
+
+- **Both models beat the trivial bar by far**, and the RNN is better and more stable than the CNN. The difference is still within the CNN's fold-to-fold variation.
+- **Max over recordings > mean** for both models (+0.04): this confirms the EDA finding that the murmur is often heard at only one location.
+- **The networks detect the murmur where it is heard:** median P(Present) is 0.88–0.93 for those recordings, 0.09–0.10 for Absent patients, and about 0.25 for recordings of Present patients taken where the murmur is not heard. That last group is the label noise → refined labels.
+- **Unknown is the hard class** (recall 0.22–0.30). Its errors are partly cheap (Absent predicted Unknown costs weight 1).
+- **CNN training is unstable** (validation accuracy jumps between epochs). **The RNN overfits** (training accuracy 0.98; validation loss rises after epochs 6–14).
+- **Tuning the thresholds did not help:** early stopping already picks the epoch that suits threshold 0.5.
+- **Honest caveat:** the epoch is chosen on the same fold that we report on. Choosing it by validation loss instead gives 0.711 (CNN) and 0.750 (RNN), so the CV numbers above are about 0.04 optimistic. The locked test set will give the unbiased estimate.
 
 ## 4. Next steps (until 30 November)
 
-1. **Training stability:** a lower learning rate or a schedule (`ReduceLROnPlateau`), a larger batch.
+1. **Training stability:** a lower learning rate or a schedule (`ReduceLROnPlateau`), a larger batch, recurrent dropout in the GRU, and early stopping on an inner validation split (removes the optimism of the CV estimate).
 2. **Labels:** test `label_mode="refined"`, where windows of Present patients recorded where the murmur is not heard are labelled Absent.
 3. **Data augmentation:** random crops in time, random gain, additive noise, SpecAugment (time/frequency masks).
 4. **Hyperparameters**, always compared with the mean CV WA: band-pass cut-offs, window length, number of mel bands/MFCCs, depth and width, dropout, class weights that follow the metric (5/3/1).
