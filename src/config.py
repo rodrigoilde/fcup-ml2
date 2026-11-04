@@ -1,38 +1,45 @@
-"""Project-wide constants: paths, signal parameters, class order and seed."""
-
+"""Project-wide constants and paths."""
 import os
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[1]
 
-# The dataset is not part of the repository. By default we expect it next to the repo folder;
-# set the environment variable CIRCOR_DATA_DIR to point somewhere else.
+# The dataset is not part of the repository. Override with the CIRCOR_DIR environment variable.
 DATA_DIR = Path(os.environ.get(
-    "CIRCOR_DATA_DIR",
-    REPO_ROOT.parent / "the-circor-digiscope-phonocardiogram-dataset-1.0.3" / "training_data",
-))
+    "CIRCOR_DIR", ROOT.parent / "the-circor-digiscope-phonocardiogram-dataset-1.0.3"))
+RECORDINGS_DIR = DATA_DIR / "training_data"
+PATIENTS_CSV = DATA_DIR / "training_data.csv"
 
-SPLITS_FILE = REPO_ROOT / "splits" / "splits.csv"
-CACHE_DIR = REPO_ROOT / "cache"          # extracted features (not versioned)
-MODELS_DIR = REPO_ROOT / "models"        # trained weights, one file per model and fold
-RESULTS_DIR = REPO_ROOT / "results"      # metrics tables and figures
+SPLITS_CSV = ROOT / "splits" / "splits.csv"
+RESULTS_DIR = ROOT / "results"
+FIGURES_DIR = RESULTS_DIR / "figures"
+CACHE_DIR = ROOT / "cache"
 
 SEED = 42
 
-# Classes in the order used by the PhysioNet 2022 evaluation code (and by Table 1 of the project statement).
+# Class order follows Table 1 of the project statement.
 CLASSES = ["Present", "Unknown", "Absent"]
-CLASS_WEIGHTS_WA = [5, 3, 1]             # weights of the weighted accuracy metric
 CLASS_TO_IDX = {c: i for i, c in enumerate(CLASSES)}
+CLASS_WEIGHTS_METRIC = (5.0, 3.0, 1.0)      # weights of the official weighted accuracy
+
 LOCATIONS = ["AV", "PV", "TV", "MV", "Phc"]
 
-# Signal pre-processing
-SR = 4000                                # all recordings are sampled at 4 kHz
-BANDPASS = (25.0, 400.0)                 # Hz, heart sounds and most murmur energy
-WINDOW_SEC = 4.0                         # fixed-length window fed to the networks
-HOP_SEC = 2.0                            # 50% overlap between consecutive windows
+# Signal processing
+SR_RAW = 4000
+SR = 2000                                    # after 1:2 downsampling (Nyquist 1 kHz)
+BANDS = [(25, 45), (45, 80), (80, 200), (200, 400), (400, 800)]   # filter bank for the 1D CNN (Hz)
 
-# 2D CNN input: log-mel spectrogram of each window -> (N_MELS, frames)
-MEL = dict(n_fft=256, hop_length=64, n_mels=32, fmin=25.0, fmax=800.0)
+# CNN windows
+WIN_SECONDS = 4.0
+WIN = int(WIN_SECONDS * SR)                  # 8000 samples
+HOP = WIN // 2                               # 50 % overlap at inference
 
-# RNN input: sequence of MFCC + delta + delta-delta vectors -> (frames, 3 * N_MFCC)
-MFCC = dict(n_mfcc=13, n_fft=256, hop_length=128, n_mels=32, fmin=25.0, fmax=800.0)
+# Log-mel frames for the RNN
+MEL_WIN_SECONDS = 0.050
+MEL_HOP_SECONDS = 0.020
+N_MELS = 32
+MEL_FMIN, MEL_FMAX = 25, 800
+RNN_WIN = 250                                # 5 s crops of 20 ms frames (shortest recording is 5.2 s)
+
+# Heart-sound states in the .tsv files
+STATES = ["unannotated", "S1", "systole", "S2", "diastole"]

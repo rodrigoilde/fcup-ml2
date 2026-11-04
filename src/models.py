@@ -1,43 +1,54 @@
-"""Model architectures (Keras), in the style of the practical classes (P03)."""
-
+"""Model definitions (Keras)."""
 import keras
-from keras import layers, regularizers
+from keras import layers
 
-from .config import CLASSES
-
-
-def build_cnn(input_shape=(32, 251, 1), filters=(16, 32, 64, 128), dropout=0.3, l2=1e-4):
-    """2D CNN on log-mel spectrograms (mel bands x time frames x 1 channel).
-
-    Each block: Conv2D 3x3 -> BatchNorm -> ReLU -> MaxPool 2x2, doubling the number of feature maps
-    while halving both axes. GlobalAveragePooling2D replaces Flatten + Dense, which keeps the network
-    small (~100k parameters, adequate for ~750 training patients) and makes the output less
-    sensitive to *where* in the window a heart sound or murmur occurs."""
-    model = keras.Sequential(name="cnn")
-    model.add(keras.Input(shape=input_shape))
-    for f in filters:
-        model.add(layers.Conv2D(f, kernel_size=3, padding="same", use_bias=False,
-                                kernel_regularizer=regularizers.l2(l2)))
-        model.add(layers.BatchNormalization())
-        model.add(layers.Activation("relu"))
-        model.add(layers.MaxPooling2D(pool_size=2))
-    model.add(layers.GlobalAveragePooling2D())
-    model.add(layers.Dropout(dropout))
-    model.add(layers.Dense(len(CLASSES), activation="softmax"))
-    return model
+from . import config
 
 
-def build_rnn(input_shape=(126, 39), units=64, dropout=0.3):
-    """Bidirectional GRU on sequences of MFCC vectors (time steps x coefficients).
+def build_cnn1d(win=config.WIN, n_channels=len(config.BANDS), blocks=((16, 4), (32, 4), (64, 4), (128, 2), (128, 2)),
+                kernel=9, dropout=0.5, n_classes=3):
+    """1D CNN on the multi-band waveform. Each block: Conv1D -> BatchNorm -> ReLU -> MaxPool.
+    With the default blocks the receptive field of the last conv layer is ~1 s, i.e. about one cardiac cycle."""
+    inp = keras.Input(shape=(win, n_channels), name="waveform")
+    x = inp
+    for filters, pool in blocks:
+        x = layers.Conv1D(filters, kernel, padding="same", use_bias=False)(x)
+        x = layers.BatchNormalization()(x)
+        x = layers.Activation("relu")(x)
+        x = layers.MaxPooling1D(pool)(x)
+    x = layers.GlobalAveragePooling1D()(x)          # murmurs repeat in every beat: average over time
+    x = layers.Dropout(dropout)(x)
+    out = layers.Dense(n_classes, activation="softmax", name="murmur")(x)
+    return keras.Model(inp, out, name="cnn1d")
 
-    GRU instead of a vanilla RNN to avoid vanishing gradients over 126 time steps (4 s); bidirectional
-    because the whole window is available, and the context after a sound (e.g. S2 after a systolic
-    murmur) is as informative as the context before it. The first layer returns the whole sequence
-    so the second one can build on it; the second returns only its final state, a summary of the window."""
-    return keras.Sequential([
-        keras.Input(shape=input_shape),
-        layers.Bidirectional(layers.GRU(units, return_sequences=True)),
-        layers.Bidirectional(layers.GRU(units)),
-        layers.Dropout(dropout),
-        layers.Dense(len(CLASSES), activation="softmax"),
-    ], name="rnn")
+
+def receptive_field(blocks=((16, 4), (32, 4), (64, 4), (128, 2), (128, 2)), kernel=9):
+    """Receptive field (in samples) of the last conv layer of build_cnn1d."""
+    rf, jump = 1, 1
+    for i, (_, pool) in enumerate(blocks):
+        rf += (kernel - 1) * jump
+        if i < len(blocks) - 1:
+            rf += (pool - 1) * jump
+            jump *= pool
+    return rf
+
+
+def build_bigru_mt(n_mels=config.N_MELS, units=64, n_layers=2, dropout=0.3, n_states=len(config.STATES),
+                   n_classes=3):
+    """Bidirectional GRU with two heads:
+    - "seg":    frame-wise heart-sound state (auxiliary task, trained with the .tsv annotations);
+    - "murmur": recording-level class, from attention pooling over the frames.
+    The .tsv files are only needed for training: at inference only the "murmur" output is used."""
+    inp = keras.Input(shape=(None, n_mels), name="logmel")
+    x = inp
+    for _ in range(n_layers):
+        x = layers.Bidirectional(layers.GRU(units, return_sequences=True, dropout=0.1))(x)
+    seg = layers.Dense(n_states, activation="softmax", name="seg")(x)
+
+    att = layers.Dense(1)(x)                          # one relevance score per frame
+    att = layers.Softmax(axis=1, name="attention")(att)
+    pooled = layers.Flatten()(layers.Dot(axes=1)([att, x]))   # weighted sum of the frames
+    h = layers.Dropout(dropout)(pooled)
+    h = layers.Dense(32, activation="relu")(h)
+    murmur = layers.Dense(n_classes, activation="softmax", name="murmur")(h)
+    return keras.Model(inp, {"murmur": murmur, "seg": seg}, name="bigru_mt")

@@ -1,99 +1,98 @@
-# Heart murmur detection from phonocardiograms
+# Heart murmur detection from phonocardiograms (CirCor DigiScope)
 
-Machine Learning II project (CC3043, DCC/FCUP, 2026/2027).
+Machine Learning II (CC3043), FCUP, 2026/2027 — group project.
 
-We predict, **for each patient**, whether a heart murmur is *Present*, *Absent* or *Unknown*, using the heart sound recordings of the public part of the [CirCor DigiScope dataset](https://physionet.org/content/circor-heart-sound/1.0.3/) (942 patients, 3163 recordings). This is the murmur task of the [PhysioNet Challenge 2022](https://physionet.org/content/challenge-2022/1.0.0/), evaluated with its **weighted accuracy**.
+For each **patient** we predict whether a heart murmur is *Present*, *Absent* or *Unknown* from their auscultation
+recordings. Models are evaluated with the weighted accuracy of the PhysioNet Challenge 2022 (weights 5 / 3 / 1).
 
-We implement two classifiers:
+We implement two of the three classifiers asked for in the statement:
 
-- a **2D CNN** on log-mel spectrograms of 4 s windows;
-- an **RNN** (2-layer bidirectional GRU) on MFCC sequences of the same windows.
+- a **1D CNN** on a multi-band version of the waveform (5 band-pass channels, 25–800 Hz);
+- a **multi-task bidirectional GRU** on log-mel frames, with an auxiliary head that predicts the heart-sound state
+  (S1 / systole / S2 / diastole / not annotated) of every frame.
 
-Window predictions are averaged per recording, and the recordings of a patient are combined with a hierarchical rule (max over recordings, thresholds tuned on validation data), giving one prediction per patient.
+**The deliverable is [`main.ipynb`](main.ipynb).** It runs the whole pipeline in order (exploration → protocol →
+pre-processing → CNN → RNN) and calls the modules in `src/`.
 
-## Repository layout
-
-```
-main.ipynb          the deliverable: data exploration, protocol, features, CNN, RNN, results
-src/                reusable code imported by the notebook
-  config.py           paths, signal parameters, class order, seed
-  data.py             reads the patient .txt files -> patient and recording tables
-  splits.py           subject-grouped, stratified test split + 5 dev folds
-  preprocessing.py    band-pass filter, normalisation, fixed-length windows
-  features.py         log-mel (CNN) and MFCC sequences (RNN), cached in cache/
-  models.py           build_cnn(), build_rnn()
-  training.py         training loop, early stopping on patient-level WA, cross-validation, ensembles
-  aggregation.py      windows -> recordings -> one prediction per patient
-  metrics.py          weighted accuracy (official definition), confusion matrix, extra metrics
-splits/splits.csv   the fixed split used by everybody (patient_id, subject_group, subset, fold)
-models/             trained models (one per architecture and fold) and their standardisation statistics
-results/            cross-validation predictions, training histories, summary tables, figures
-tests/              checks of the metric and of the split
-docs/checkpoint.md  status and talking points for the checkpoint
-```
+> **Status — checkpoint of 5 November 2026.** Data exploration, evaluation protocol, metric, pre-processing for both
+> models and a cross-validated CNN baseline are done. The RNN runs end to end (smoke run on one fold) but has not been
+> cross-validated or tuned yet. The test set has not been used.
 
 ## Setup
 
-1. **Environment** (Python 3.11):
-
-   ```bash
-   conda env create -f environment.yml
-   conda activate ml2
-   ```
-
-   or, with an existing Python 3.11: `pip install -r requirements.txt`.
-
-2. **Dataset** (not included in the repository). Download it from PhysioNet and place it next to the repository folder, so that this path exists:
-
-   ```
-   ../the-circor-digiscope-phonocardiogram-dataset-1.0.3/training_data/
-   ```
-
-   To use another location, set an environment variable before starting Jupyter:
-   `export CIRCOR_DATA_DIR=/path/to/training_data`.
-
-## Running
-
-Open `main.ipynb` with the `ml2` environment as kernel (in VS Code, select the `ml2` interpreter; in Jupyter, `python -m ipykernel install --user --name ml2` once) and run all cells. Or, from the terminal:
-
 ```bash
-jupyter nbconvert --to notebook --execute --inplace main.ipynb
+conda activate ml2                 # or any Python 3.11 environment
+pip install -r requirements.txt
 ```
 
-Flags in the first code cell:
+The dataset is **not** included. By default the code expects the public CirCor data (v1.0.3) next to this repository:
 
-| Flag | Default | Meaning |
+```
+../the-circor-digiscope-phonocardiogram-dataset-1.0.3/
+    training_data.csv
+    training_data/   (<patient>.txt, <patient>_<loc>.wav/.hea/.tsv)
+```
+
+Set the `CIRCOR_DIR` environment variable to point to another location.
+
+## How to run
+
+```bash
+pytest tests                       # metric, labels, splits, aggregation (8 tests)
+jupyter notebook main.ipynb        # run all cells in order
+```
+
+`splits/splits.csv` is included. It is deterministic and can be re-created with `python -m src.splits`.
+
+Training switches in the setup cell of `main.ipynb`:
+
+| Switch | `False` (default) | `True` |
 |---|---|---|
-| `RETRAIN` | `False` | `False` loads the saved models and results from `models/` and `results/`, so the whole notebook runs in a few minutes. `True` trains everything again (about 2–3 h on a laptop CPU). Missing results are always trained. |
-| `FOLDS_TO_RUN` | `range(5)` | dev folds used for cross-validation |
-| `EVALUATE_TEST` | `False` | the hold-out test set stays locked until the final model is chosen |
+| `RETRAIN_CNN` | reuse the out-of-fold predictions in `results/` (trains if they are missing) | 5-fold CV of two configurations, ~35 min on a laptop CPU |
+| `RETRAIN_RNN` | reuse the smoke-run results (trains if they are missing) | smoke run on fold 0, ~3 min |
 
-The first run extracts the features into `cache/` (about 30 s); later runs reuse them.
-
-Run the tests with `pytest tests/`.
+With saved results the notebook runs in a couple of minutes. Pre-processed arrays are cached in `cache/` and trained models are
+saved in `results/models/` (both git-ignored and re-created automatically).
 
 ## Evaluation protocol
 
-- The split is done **by subject**. The 70 subjects recorded in both campaigns (two patient IDs linked by `Additional ID`) are kept in the same subset.
-- **Test set:** 20% of the subjects, stratified by murmur label. It is never used for any decision, and is evaluated once at the end.
-- **Dev set:** the remaining 80%, divided into 5 stratified folds. In iteration *k*, fold *k* is used for validation (early stopping, threshold tuning, model selection) and the other four for training. We report the mean ± standard deviation over the 5 folds.
-- **Main metric:** patient-level weighted accuracy (weights 5/3/1 for Present/Unknown/Absent). Predicting *Present* for everyone gives a WA of about 0.50, so a useful model has to beat that.
+- **Grouped by subject, not only by patient ID.** 70 children were recorded in both campaigns and appear under two
+  Patient IDs (linked by `Additional ID`). Linked IDs share a `group_id` and always fall in the same subset.
+- **Locked test set**: 20 % of the patients (189), stratified by murmur × campaign. Not used so far; it will be used
+  once, at the end.
+- **5-fold cross-validation** on the remaining 753 development patients, for every model decision. The audio analyses
+  that inform the pre-processing also use the development set only.
+- One prediction per patient; patient-level confusion matrix with rows = predicted, columns = true (Table 1 of the
+  statement).
 
-## Current results (5-fold cross-validation on the dev set)
+## Results so far (development set, 5-fold CV, out-of-fold, patient level)
 
-Patient-level weighted accuracy, mean ± standard deviation over the 5 validation folds (first configuration, before tuning):
-
-| Model | Hierarchical rule, thresholds 0.5 | Hierarchical rule, cross-fitted thresholds | Argmax of the mean probability |
+| Model | Loss | Aggregation / decision | WA (mean ± std over folds) |
 |---|---|---|---|
-| CNN | 0.748 ± 0.068 | 0.742 ± 0.084 | 0.708 ± 0.067 |
-| RNN | 0.786 ± 0.023 | 0.779 ± 0.029 | 0.745 ± 0.053 |
+| always *Present* (reference) | – | – | 0.499 |
+| 1D CNN, E1 | class-weighted CE | mean / argmax | 0.779 ± 0.025 |
+| 1D CNN, E2 | plain CE | max-Present / Bayes rule for WA | **0.821 ± 0.025** |
+| BiGRU multi-task (smoke run) | CE + 0.5 · segmentation CE | max-Present / Bayes | 0.806 (fold 0 only, not comparable) |
 
-Predicting *Present* for everyone gives 0.499. These values are about 0.04 optimistic, because early stopping chooses the epoch on the same fold (see `main.ipynb`, Section 6). The test set is still locked.
+These are validation numbers: the early-stopping epoch is chosen on the same fold, so they are optimistic. Confusion
+matrices, additional metrics and their interpretation are in `main.ipynb`, Sections 5.5–5.8.
 
-## Team
+## Repository structure
 
-| Member | Main responsibility |
-|---|---|
-| _name_ | data, evaluation protocol, aggregation |
-| _name_ | CNN |
-| _name_ | RNN |
+```
+main.ipynb           the deliverable notebook (executed, with outputs)
+src/
+  config.py          paths and constants
+  data.py            patient table (+ linked groups), recording index, location-aware recording labels
+  splits.py          test split + CV folds (python -m src.splits)
+  metrics.py         weighted accuracy, confusion matrix, additional metrics
+  preprocessing.py   2 kHz resampling, filter bank, robust normalization, windows (CNN)
+  features.py        log-mel frames and frame-level heart-sound states (RNN)
+  models.py          build_cnn1d, build_bigru_mt
+  aggregate.py       recording -> patient aggregation and decision rules
+  training.py        crop datasets, patient-level early stopping, CV loop
+tests/               unit tests
+splits/splits.csv    the fixed split
+results/             out-of-fold predictions, CV summaries, figures
+docs/                planning and checkpoint notes (Portuguese, internal)
+```

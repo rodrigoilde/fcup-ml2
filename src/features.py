@@ -1,85 +1,47 @@
-"""Features for each architecture, computed per window and cached on disk.
-
-* 2D CNN: log-mel spectrogram of each 4 s window -> (n_mels, frames) = (32, 251).
-* RNN: sequence of 13 MFCC + delta + delta-delta per frame -> (frames, 39) = (126, 39).
-"""
-
-import hashlib
-import json
-
-import librosa
+"""Log-mel frame sequences and frame-level heart-sound states for the RNN."""
 import numpy as np
+import librosa
 
-from .config import BANDPASS, CACHE_DIR, HOP_SEC, MEL, MFCC, SR, WINDOW_SEC
-from .preprocessing import make_windows, preprocess_recording
+from . import config
+from .data import read_tsv
+from .preprocessing import load_wav, downsample
 
-
-def logmel(windows, params=MEL):
-    """(n, samples) -> (n, n_mels, frames) log-mel spectrograms in dB."""
-    S = librosa.feature.melspectrogram(y=windows, sr=SR, power=2.0, **params)
-    return librosa.power_to_db(S, ref=1.0).astype(np.float32)
-
-
-def mfcc_sequence(windows, params=MFCC):
-    """(n, samples) -> (n, frames, 3 * n_mfcc) MFCC, delta and delta-delta, time first (RNN input)."""
-    m = librosa.feature.mfcc(y=windows, sr=SR, **params)                   # (n, n_mfcc, frames)
-    feats = np.concatenate([m, librosa.feature.delta(m, order=1), librosa.feature.delta(m, order=2)], axis=1)
-    return np.transpose(feats, (0, 2, 1)).astype(np.float32)
+HOP = int(config.MEL_HOP_SECONDS * config.SR)        # 40 samples = 20 ms
+WIN = int(config.MEL_WIN_SECONDS * config.SR)        # 100 samples = 50 ms
+N_FFT = 256                                          # zero-padded FFT: 7.8 Hz bins, no empty mel filters
 
 
-FEATURES = {"logmel": (logmel, MEL), "mfcc": (mfcc_sequence, MFCC)}
+def logmel(x):
+    """(T,) signal at 2 kHz -> (n_frames, N_MELS) log-mel, standardized per band over time."""
+    mel = librosa.feature.melspectrogram(y=x, sr=config.SR, n_fft=N_FFT, win_length=WIN, hop_length=HOP,
+                                         n_mels=config.N_MELS, fmin=config.MEL_FMIN, fmax=config.MEL_FMAX)
+    z = np.log(mel + 1e-8).T
+    return ((z - z.mean(axis=0)) / (z.std(axis=0) + 1e-6)).astype(np.float32)
 
 
-def _cache_path(kind, band, window_sec, hop_sec):
-    params = dict(kind=kind, band=band, window=window_sec, hop=hop_sec, sr=SR, **FEATURES[kind][1])
-    key = hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()[:8]
-    return CACHE_DIR / f"{kind}_{key}.npz"
+def frame_labels(tsv_path, n_frames):
+    """State (0..4) at the centre of each frame; frames outside the annotated span are 0."""
+    seg = read_tsv(tsv_path)
+    t = np.arange(n_frames) * config.MEL_HOP_SECONDS          # librosa frames are centred at i * hop
+    idx = np.searchsorted(seg[:, 0], t, side="right") - 1
+    inside = (idx >= 0) & (t < seg[np.clip(idx, 0, None), 1])
+    return np.where(inside, seg[np.clip(idx, 0, None), 2], 0).astype(np.int32)
 
 
-def compute_features(recordings, kind, band=BANDPASS, window_sec=WINDOW_SEC, hop_sec=HOP_SEC,
-                     use_cache=True, verbose=True):
-    """Return {recording_id: array (n_windows, ...)} for every recording of the DataFrame.
-
-    Results are cached in cache/<kind>_<hash>.npz; the hash changes with any parameter, so a stale
-    cache is never reused after changing the pre-processing."""
-    fn, _ = FEATURES[kind]
-    path = _cache_path(kind, band, window_sec, hop_sec)
-    cached = {}
-    if use_cache and path.exists():
-        with np.load(path) as f:
-            cached = {k: f[k] for k in f.files}
-    missing = [r for r in recordings.itertuples() if r.recording_id not in cached]
-    for i, r in enumerate(missing):
-        x = preprocess_recording(r.wav_path, band)
-        cached[r.recording_id] = fn(make_windows(x, SR, window_sec, hop_sec)).astype(np.float16)
-        if verbose and (i + 1) % 500 == 0:
-            print(f"  {kind}: {i + 1}/{len(missing)} recordings")
-    if missing and use_cache:
-        CACHE_DIR.mkdir(exist_ok=True)
-        np.savez(path, **cached)
-    return {rid: cached[rid] for rid in recordings["recording_id"]}
-
-
-def stack_windows(recordings, feats):
-    """Stack the windows of the given recordings -> X (N, ...) float32 and the recording id of each window."""
-    X = np.concatenate([feats[rid] for rid in recordings["recording_id"]]).astype(np.float32)
-    rec_ids = np.concatenate([[rid] * len(feats[rid]) for rid in recordings["recording_id"]])
-    return X, rec_ids
-
-
-class Standardizer:
-    """Per-feature z-score fitted on the training windows only (never on validation/test data).
-
-    `axis` lists the axes that are averaged: for log-mel (N, mels, frames) we use (0, 2), one
-    mean/std per mel band; for MFCC sequences (N, frames, coefs) we use (0, 1), one per coefficient."""
-
-    def __init__(self, axis):
-        self.axis = axis
-
-    def fit(self, X):
-        self.mean = X.mean(axis=self.axis, keepdims=True)
-        self.std = X.std(axis=self.axis, keepdims=True) + 1e-6
-        return self
-
-    def transform(self, X):
-        return ((X - self.mean) / self.std).astype(np.float32)
+def load_rnn_inputs(recordings, cache=True):
+    """{recording name: (log-mel (n_frames, 32) float16, states (n_frames,) int8)}, cached under cache/rnn/."""
+    out = {}
+    cache_dir = config.CACHE_DIR / "rnn"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for name, wav, tsv in zip(recordings["recording"], recordings["wav"], recordings["tsv"]):
+        f = cache_dir / f"{name}.npz"
+        if cache and f.exists():
+            d = np.load(f)
+            out[name] = (d["x"], d["s"])
+            continue
+        x = logmel(downsample(load_wav(wav)))
+        s = frame_labels(tsv, len(x))
+        out[name] = (x.astype(np.float16), s.astype(np.int8))
+        if cache:
+            np.savez(f, x=out[name][0], s=out[name][1])
+    return out

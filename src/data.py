@@ -1,109 +1,78 @@
-"""Read the CirCor patient files into a patient table and a recording table.
-
-Each patient has a text file `<id>.txt`:
-
-    13918 4 4000                                  <- patient id, number of recordings, sampling rate
-    AV 13918_AV.hea 13918_AV.wav 13918_AV.tsv     <- one line per recording
-    ...
-    #Age: Child                                   <- metadata and labels
-    #Murmur: Present
-    ...
-
-We parse these files (instead of `training_data.csv`) so that the same code also reads the hidden
-test set, whose files have the same layout but no labels.
-"""
-
-from pathlib import Path
-
+"""Loading the CirCor patient table and the recording index."""
 import numpy as np
 import pandas as pd
 
-from .config import DATA_DIR
-
-# "#Key: value" fields of the patient file -> column name in the patient table
-_FIELDS = {
-    "Age": "age", "Sex": "sex", "Height": "height", "Weight": "weight",
-    "Pregnancy status": "pregnant", "Murmur": "murmur", "Murmur locations": "murmur_locations",
-    "Most audible location": "most_audible_location", "Systolic murmur timing": "systolic_timing",
-    "Systolic murmur grading": "systolic_grading", "Diastolic murmur timing": "diastolic_timing",
-    "Outcome": "outcome",
-    "Campaign": "campaign", "Additional ID": "additional_id",
-}
+from . import config
 
 
-def _parse_value(text):
-    text = text.strip()
-    return np.nan if text in ("", "nan") else text
+def _link_groups(patient_ids, additional_ids):
+    """Union-find over (Patient ID, Additional ID): the same child recorded in both campaigns
+    appears under two Patient IDs that point to each other. Returns {patient_id: group_id}."""
+    parent = {p: p for p in patient_ids}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for p, a in zip(patient_ids, additional_ids):
+        if a in parent:
+            ra, rp = find(a), find(p)
+            if ra != rp:
+                parent[max(ra, rp)] = min(ra, rp)
+    return {p: find(p) for p in patient_ids}
 
 
-def parse_patient_file(path):
-    """Return (patient dict, list of recording dicts) for one `<id>.txt` file."""
-    path = Path(path)
-    lines = [l.strip() for l in path.read_text().splitlines() if l.strip()]
-    pid, n_rec, sr = lines[0].split()[:3]
-    patient = {"patient_id": int(pid), "n_recordings": int(n_rec), "sr": int(sr)}
-
-    recordings = []
-    for line in lines[1:1 + int(n_rec)]:
-        parts = line.split()
-        location, wav = parts[0], parts[2]
-        tsv = parts[3] if len(parts) > 3 else None
-        recordings.append({
-            "patient_id": int(pid),
-            "recording_id": Path(wav).stem,                 # e.g. 13918_AV, or 49748_AV_1 for repeated locations
-            "location": location,
-            "wav_path": str(path.parent / wav),
-            "tsv_path": str(path.parent / tsv) if tsv else None,
-        })
-
-    for line in lines[1 + int(n_rec):]:
-        if line.startswith("#") and ":" in line:
-            key, value = line[1:].split(":", 1)
-            if key.strip() in _FIELDS:
-                patient[_FIELDS[key.strip()]] = _parse_value(value)
-    return patient, recordings
+def load_patients():
+    """One row per patient, with the murmur label and a `group_id` shared by linked patients."""
+    df = pd.read_csv(config.PATIENTS_CSV, dtype={"Patient ID": int})
+    df = df.rename(columns={"Patient ID": "patient_id", "Recording locations:": "recording_locations",
+                            "Murmur": "murmur", "Murmur locations": "murmur_locations",
+                            "Campaign": "campaign", "Additional ID": "additional_id", "Age": "age"})
+    df["additional_id"] = pd.to_numeric(df["additional_id"], errors="coerce").astype("Int64")
+    groups = _link_groups(df["patient_id"].tolist(),
+                          [int(a) if pd.notna(a) else None for a in df["additional_id"]])
+    df["group_id"] = df["patient_id"].map(groups)
+    return df
 
 
-def load_dataset(data_dir=DATA_DIR):
-    """Read every patient file of `data_dir`.
-
-    Returns
-    -------
-    patients : DataFrame, one row per patient (labels are NaN if the files have none).
-    recordings : DataFrame, one row per recording, with the patient label and a flag telling whether
-        the murmur was heard at that location (`murmur_audible_here`, only True for Present patients).
-    """
-    data_dir = Path(data_dir)
-    files = sorted(data_dir.glob("*.txt"), key=lambda p: int(p.stem))
-    if not files:
-        raise FileNotFoundError(f"No patient .txt files found in {data_dir}. Set CIRCOR_DATA_DIR.")
-    patients, recordings = [], []
-    for f in files:
-        p, r = parse_patient_file(f)
-        patients.append(p)
-        recordings.extend(r)
-
-    patients = pd.DataFrame(patients)
-    for col in _FIELDS.values():
-        if col not in patients:
-            patients[col] = np.nan
-    patients["height"] = pd.to_numeric(patients["height"], errors="coerce")
-    patients["weight"] = pd.to_numeric(patients["weight"], errors="coerce")
-    patients["additional_id"] = pd.to_numeric(patients["additional_id"], errors="coerce").astype("Int64")
-    patients["murmur_locations"] = patients["murmur_locations"].apply(
-        lambda s: s.split("+") if isinstance(s, str) else [])
-
-    recordings = pd.DataFrame(recordings).merge(
-        patients[["patient_id", "murmur", "murmur_locations"]], on="patient_id", how="left")
-    recordings["murmur_audible_here"] = [
-        m == "Present" and loc in locs
-        for m, loc, locs in zip(recordings["murmur"], recordings["location"], recordings["murmur_locations"])
-    ]
-    recordings = recordings.drop(columns="murmur_locations")
-    return patients, recordings
+def recording_label(patient_murmur, murmur_locations, location):
+    """Location-aware recording label: a recording of a Present patient is Present only if its
+    location is listed in `Murmur locations`; elsewhere the murmur was not heard (Absent)."""
+    if patient_murmur != "Present":
+        return patient_murmur
+    heard = set(str(murmur_locations).split("+"))
+    return "Present" if location in heard else "Absent"
 
 
-def load_segmentation(tsv_path):
-    """Read a segmentation file: DataFrame with start, end (seconds) and state
-    (0 = unannotated, 1 = S1, 2 = systole, 3 = S2, 4 = diastole)."""
-    return pd.read_csv(tsv_path, sep="\t", header=None, names=["start", "end", "state"])
+def load_recordings(patients=None):
+    """One row per .wav file, read from the per-patient <id>.txt files."""
+    if patients is None:
+        patients = load_patients()
+    rows = []
+    for p in patients.itertuples(index=False):
+        lines = (config.RECORDINGS_DIR / f"{p.patient_id}.txt").read_text().splitlines()
+        n_rec = int(lines[0].split()[1])
+        for line in lines[1:1 + n_rec]:
+            location, hea, wav, tsv = line.split()
+            n_samples = int((config.RECORDINGS_DIR / hea).read_text().split()[3])
+            rows.append(dict(
+                patient_id=p.patient_id, group_id=p.group_id, recording=wav[:-4], location=location,
+                wav=str(config.RECORDINGS_DIR / wav), tsv=str(config.RECORDINGS_DIR / tsv),
+                duration=n_samples / config.SR_RAW, patient_label=p.murmur,
+                rec_label=recording_label(p.murmur, p.murmur_locations, location),
+                campaign=p.campaign))
+    return pd.DataFrame(rows)
+
+
+def read_tsv(path):
+    """Segmentation file -> array of (start_s, end_s, state), state in 0..4 (0 = unannotated)."""
+    return np.loadtxt(path, ndmin=2)
+
+
+def unannotated_fraction(tsv_path, duration):
+    """Fraction of the recording not covered by S1/systole/S2/diastole annotations."""
+    seg = read_tsv(tsv_path)
+    annotated = sum(end - start for start, end, state in seg if state != 0)
+    return 1.0 - annotated / duration

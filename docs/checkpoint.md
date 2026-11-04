@@ -1,89 +1,108 @@
-# Checkpoint — 5 November 2026
+# Checkpoint — 5 nov 2026 (notas internas)
 
-Status of the project and talking points for the checkpoint conversation. Everything listed here is implemented in `src/` and shown in `main.ipynb`.
+Não há apresentação formal: o professor pergunta o que fizemos e nós explicamos. Levar o `main.ipynb` aberto
+(já executado) e este ficheiro. São ~2 min por membro e depois perguntas. **Cada um deve conseguir responder a
+qualquer pergunta da lista, não só às da sua parte.**
 
-## 1. Status at a glance
+---
 
-| Step of the statement | Status |
-|---|---|
-| Data exploration | done (`main.ipynb`, Section 1) |
-| Evaluation protocol (patient/subject split, test set, 5-fold CV) | done, fixed in `splits/splits.csv`, checked by `tests/test_splits.py` |
-| Weighted accuracy (official definition) | done, `src/metrics.py`, checked by `tests/test_metrics.py` |
-| Pre-processing and features (CNN and RNN) | done, first configuration |
-| CNN: architecture, training, patient-level results | **first baseline trained (5 folds)** |
-| RNN: architecture, training, patient-level results | **first baseline trained (5 folds)** |
-| Hyperparameter tuning, data augmentation, label refinement | next |
-| Final test evaluation, hidden-set predictions, slides | end of November |
+## Guião
 
-## 2. Main decisions and why
+### Membro A: dados e protocolo (§1–3 do main)
 
-| Decision | Why |
-|---|---|
-| Split **by subject**, merging the 140 patient IDs that are the same 70 people (`Additional ID`, both campaigns) | otherwise one person can be in training and test → optimistic results |
-| **20% hold-out test** (locked) + **5-fold CV** on the remaining 80%, stratified | only 68 Unknown patients: one validation set would hold about 14 of them, too noisy to decide anything; the test set must never influence a decision |
-| Band-pass **25–400 Hz**, z-score per recording | removes movement/breathing (< 25 Hz) and broadband noise (> 400 Hz, highest in Unknown recordings); removes gain differences |
-| **4 s windows, 2 s hop** | recordings last 5–65 s; 4 s holds several heartbeats; about 31 000 training examples instead of 3163 |
-| CNN on **log-mel** (32 × 251) | the murmur is a local time–frequency pattern between S1 and S2 → 2D convolutions |
-| RNN on **MFCC + Δ + ΔΔ** (126 × 39) | compact vector per frame; sequence of S1–systole–S2–diastole; half the time steps → faster, more stable BPTT |
-| Small networks (about 100k parameters), GAP in the CNN, BN, dropout, L2 | about 600 training patients per fold → overfitting is the main risk |
-| **Balanced class weights** in the cross-entropy | 74% Absent; without weights the network predicts Absent |
-| **Early stopping on the patient-level WA** of the validation fold | we are evaluated per patient with the WA, not per window with the loss |
-| Window → recording: **mean**; recording → patient: **max + hierarchical thresholds** | a murmur may be heard at a single location (34 of the 179 Present patients); one confident recording must be enough |
-| Thresholds tuned on validation, **cross-fitted** (fold *k* uses thresholds tuned on the other folds) | tuning and reporting on the same patients would inflate the score |
-| Keras/TensorFlow on CPU | same tools as the practical classes; tensorflow-metal gives wrong results on Apple Silicon |
+- 942 pacientes: 74% *Absent*, 19% *Present*, 7% *Unknown*. Sempre-*Present* já dá WA 0,499: é a nossa linha de base.
+- **Achado 1:** 70 crianças aparecem com dois `Patient ID` (uma visita em cada campanha, ligadas pelo
+  `Additional ID`). Dividir por `Patient ID` deixaria passar informação entre treino e teste → agrupamos pelo sujeito.
+- Protocolo: teste de 20% fechado (189 pacientes) + CV de 5 folds no resto, estratificados por sopro × campanha.
+  A exploração do áudio foi feita **só** no desenvolvimento.
+- Métrica implementada e testada contra a fórmula do enunciado (8 testes). As linhas da matriz são as previsões, como
+  na Tabela 1 (ao contrário do sklearn).
+- **Achado 2:** em 54 de 143 *Present*, o sopro não se ouve em todos os locais → rótulos por gravação conforme o local.
+- **Achado 3:** na gravação inteira, *Present* e *Absent* quase não se distinguem no espectro; dentro da sístole,
+  *Present* tem 2,5–5× mais potência entre 25 e 800 Hz → bandas até 800 Hz e modelação da fase cardíaca.
+- **Achado 4:** os anotadores não conseguiram segmentar 69% do tempo das gravações *Unknown* (contra ~43% nas
+  outras) → "*Unknown*" é sobretudo uma questão de qualidade do sinal.
 
-## 3. Preliminary results (5-fold CV, dev set, patient level)
+### Membro B: CNN 1D (§4.1, §5)
 
-Weighted accuracy, mean ± standard deviation over the 5 validation folds (first configuration, no tuning yet):
+- Entrada: 2 kHz, 5 bandas (25–45, 45–80, 80–200, 200–400, 400–800 Hz) como 5 canais, normalização robusta,
+  janelas de 4 s. As bandas vêm de Potes et al. (vencedor da PhysioNet 2016) e foram alargadas até 800 Hz.
+- 5 blocos Conv1D-BN-ReLU-MaxPool, campo recetivo ≈ 0,92 s (≈ um ciclo; a mediana é 0,58 s), GAP, dropout.
+- Early stopping no **WA por paciente** do fold de validação (callback próprio), não na `val_loss`.
+- Duas configurações para o desequilíbrio de classes:
+  - E1: pesos de classe + argmax → **0,779 ± 0,025**;
+  - E2: CE sem pesos + máximo sobre os locais + regra de Bayes `argmax(5·pP, 3·pU, 1·pA)` → **0,821 ± 0,025**,
+    melhor nos 5 folds.
+- O que interpretámos: a regra de decisão é o que mais pesa (E2 com argmax: 0,693). Pesos na perda + Bayes conta os
+  custos duas vezes (0,54–0,57). Os pesos de classe deixam o treino instável.
+- Fraqueza: *Unknown* (6/54 em E2). Os números são **otimistas** porque a época é escolhida no mesmo fold.
 
-| Aggregation rule | CNN (98k params) | RNN (115k params) |
-|---|---|---|
-| argmax of the mean probability | 0.708 ± 0.067 | 0.745 ± 0.053 |
-| hierarchical, thresholds 0.5 | **0.748 ± 0.068** | **0.786 ± 0.023** |
-| hierarchical, cross-fitted thresholds | 0.742 ± 0.084 | 0.779 ± 0.029 |
-| *reference: always Present* | *0.499* | *0.499* |
+### Membro C: BiGRU multitarefa (§4.2, §6)
 
-Additional metrics (5 folds pooled, cross-fitted thresholds): recall Present 0.84 / 0.85, recall Unknown 0.22 / 0.30, recall Absent 0.77 / 0.84, macro-F1 0.58 / 0.63 (CNN / RNN). Confusion matrices: `results/figures/comparison_confusion.png`.
+- Entrada: log-mel com 32 bandas de 25 a 800 Hz, frames de 20 ms. 2×BiGRU(64) com duas cabeças:
+  - **segmentação** (estado de cada frame: não anotado, S1, sístole, S2, diástole), treinada com os .tsv;
+  - **sopro**, com *attention pooling*.
+- Porquê: os sopros estão na sístole (achado 3) e o *Unknown* tem a ver com o sinal ser ou não segmentável
+  (achado 4). Os .tsv são só alvos de treino, por isso não fazem falta na inferência.
+- *Smoke run* (fold 0, 10 épocas): a cabeça de segmentação chega a 0,69 de exatidão por frame (a classe maioritária
+  dá 0,47) e reproduz o ciclo; o WA do fold 0 é 0,806. É só um fold, não é uma comparação com a CNN.
+- A seguir: CV completa e **ablação λ = 0 vs λ > 0**, para saber se a cabeça auxiliar ajuda de facto.
 
-What we learned from these first results (to show at the checkpoint):
+### Fecho (qualquer membro)
 
-- **Both models beat the trivial bar by far**, and the RNN is better and more stable than the CNN. The difference is still within the CNN's fold-to-fold variation.
-- **Max over recordings > mean** for both models (+0.04): this confirms the EDA finding that the murmur is often heard at only one location.
-- **The networks detect the murmur where it is heard:** median P(Present) is 0.88–0.93 for those recordings, 0.09–0.10 for Absent patients, and about 0.25 for recordings of Present patients taken where the murmur is not heard. That last group is the label noise → refined labels.
-- **Unknown is the hard class** (recall 0.22–0.30). Its errors are partly cheap (Absent predicted Unknown costs weight 1).
-- **CNN training is unstable** (validation accuracy jumps between epochs). **The RNN overfits** (training accuracy 0.98; validation loss rises after epochs 6–14).
-- **Tuning the thresholds did not help:** early stopping already picks the epoch that suits threshold 0.5.
-- **Honest caveat:** the epoch is chosen on the same fold that we report on. Choosing it by validation loss instead gives 0.711 (CNN) and 0.750 (RNN), so the CV numbers above are about 0.04 optimistic. The locked test set will give the unbiased estimate.
+Próximas semanas: *Unknown* (limiares, sinal de qualidade), afinação da CNN, CV da RNN, ensemble dos folds,
+avaliação única no teste, script para os dados ocultos. O plano está em `docs/PLANO.md`.
 
-## 4. Next steps (until 30 November)
+---
 
-1. **Training stability:** a lower learning rate or a schedule (`ReduceLROnPlateau`), a larger batch, recurrent dropout in the GRU, and early stopping on an inner validation split (removes the optimism of the CV estimate).
-2. **Labels:** test `label_mode="refined"`, where windows of Present patients recorded where the murmur is not heard are labelled Absent.
-3. **Data augmentation:** random crops in time, random gain, additive noise, SpecAugment (time/frequency masks).
-4. **Hyperparameters**, always compared with the mean CV WA: band-pass cut-offs, window length, number of mel bands/MFCCs, depth and width, dropout, class weights that follow the metric (5/3/1).
-5. **Final evaluation:** ensemble of the 5 fold models, thresholds tuned on all validation folds, one evaluation on the test set.
-6. **Bonus:** run the same ensemble on the hidden set (`HIDDEN_DIR` in Section 7 of the notebook) → `results/hidden_predictions.csv`.
-7. **Slides** (10 minutes) and self-assessment form.
+## Perguntas prováveis
 
-## 5. Proposed division of work
+**Porque não dividiram só por `Patient ID`?** Porque 70 crianças têm dois IDs (uma visita em cada campanha). Com a
+divisão por ID, o mesmo coração podia ficar no treino e no teste. Ligámos os IDs com union-find (`src/data.py`).
 
-| Member | Responsibility |
-|---|---|
-| A — _name_ | data, evaluation protocol, aggregation and thresholds, final evaluation, hidden-set predictions |
-| B — _name_ | CNN: tuning, augmentation, analysis of errors |
-| C — _name_ | RNN: tuning, alternative recurrent units (LSTM), analysis of errors |
+**Usaram o conjunto de teste para alguma coisa?** Não. Não está carregado em nenhuma secção de modelos, e o `main` tem
+um `assert`. Até a exploração do áudio que justificou o pré-processamento foi feita só no desenvolvimento.
 
-Everyone writes their part of the slides. Before the presentation, each member must be able to explain all the parts (see below).
+**Como obtêm uma previsão por paciente?** Cada gravação recebe a média das probabilidades das suas janelas. Para o
+paciente, P(Present) = máximo sobre as gravações (basta um local com sopro) e P(Unknown) e P(Absent) = médias; depois
+renormalizamos. A decisão é `argmax(w_c · p_c)`, com w = (5, 3, 1).
 
-## 6. Questions everyone should be able to answer
+**Porque é que essa regra é a certa?** O denominador do WA não depende das previsões. Acertar um paciente da classe c
+vale w_c, logo o ganho esperado de prever c é w_c · p_c. Com probabilidades calibradas, maximizar isso é ótimo.
 
-- **Why is "always Present" already at WA ≈ 0.50?** Present patients weigh 5 each: 5·179 / (5·179 + 3·68 + 695) ≈ 0.50 on the whole public set. "Always Absent" gets 74% accuracy but WA 0.39.
-- **Why not split by recording?** The recordings of one patient are very similar, so the model would be tested on patients it has already heard. Splitting by patient ID alone is not enough either, because 70 people have two IDs.
-- **Where is the test set used?** Nowhere until the end. Early stopping, thresholds and model choices only use the validation folds.
-- **How many inputs per patient?** Variable: 1 to 6 recordings, each with about 10 windows. Windows are averaged per recording, and the recordings are combined with max + thresholds.
-- **Why max and not mean over recordings?** The murmur may be audible at only one valve; the mean would dilute it.
-- **How are the class weights computed?** `n_windows / (3 · n_windows_of_class)` on the training windows of each fold: about 1.8 (Present), 6.8 (Unknown) and 0.44 (Absent).
-- **Why standardise with training statistics only?** Using validation/test statistics would leak information from those sets.
-- **Why GAP in the CNN?** One value per feature map ("is the pattern somewhere in the window"). It needs far fewer parameters than Flatten + Dense and is more robust to where the murmur falls in the window.
-- **Why a GRU, why bidirectional, why clip gradients?** Gates avoid vanishing gradients over 126 steps (with fewer parameters than an LSTM); the whole window is available, so the future context helps; clipping prevents exploding gradients in BPTT.
-- **Why is the validation curve so noisy?** About 150 validation patients per fold (about 29 Present and 11 Unknown): one Present patient more or less changes the WA by about 0.02. On top of that, a high learning rate and batch normalisation make the window-level validation accuracy jump between epochs (Section 3).
+**Então porque não usar também pesos de classe?** Porque os custos seriam contados duas vezes. Testámos: E1 + Bayes cai
+para ~0,55, porque quase tudo passa a ser *Present*.
+
+**0,82 não é bom demais?** É um valor de validação: a época de paragem é escolhida no mesmo fold, e as curvas são
+ruidosas, por isso é otimista. A estimativa honesta vai ser o ensemble dos folds avaliado uma vez no teste. Não
+comparamos com o Challenge, cujo teste era outro.
+
+**Porque CNN 1D e não 2D sobre espectrograma?** As bandas cobrem exatamente a zona onde o espectro da sístole difere, e
+a convolução 1D mantém a resolução temporal fina de S1/S2. Há precedente (Potes et al. 2016). A representação
+tempo-frequência fica para a RNN (log-mel).
+
+**Porque GRU e não LSTM? E porque bidirecional?** Temos ~2000 gravações de treino por fold: a GRU tem menos parâmetros.
+É bidirecional porque classificamos gravações completas (offline): saber o que vem a seguir ajuda a localizar S1/S2.
+
+**E se os dados ocultos não tiverem .tsv?** Nenhum modelo precisa deles na inferência. Na RNN, os .tsv são apenas alvos
+da cabeça auxiliar durante o treino.
+
+**Como lidam com durações diferentes?** Cortes aleatórios de 4 s (CNN) ou 5 s (RNN) no treino; janelas com 50% de
+sobreposição na inferência, com média por gravação. Todas as gravações têm mais de 5 s, por isso nunca há *padding*.
+
+**Porque early stopping no WA e não na `val_loss`?** A `val_loss` é calculada por corte e com rótulos por gravação; o
+que nos avaliam é o WA por paciente. Implementámos um callback que calcula o WA no fim de cada época.
+
+**Qual é a maior fraqueza agora?** A classe *Unknown*: a E2 só reconhece 6 de 54. É a prioridade das próximas semanas.
+
+**Usaram IA generativa?** Responder com verdade e de forma concreta: sim, como apoio, e cada decisão está justificada
+com evidência tirada dos próprios dados (secção 3 e registo de decisões no PLANO). Cada um de nós sabe explicar o código.
+
+---
+
+## Perguntas a fazer ao professor
+
+1. Os dados ocultos vão trazer os ficheiros `<paciente>.txt` e/ou os `.tsv`, ou só os `.wav`?
+2. Quando são libertados?
+3. Reportar a CV com early stopping no próprio fold, assinalando que é otimista, é aceitável? Ou preferem que
+   reportemos só o teste?

@@ -1,13 +1,8 @@
-# extracted features (recomputed automatically, see src/features.py)
+# pre-processed arrays (re-created automatically by the notebooks)
 cache/
-
-# Python / Jupyter
+# trained weights (re-created by notebooks 03/04)
+results/models/
 __pycache__/
-*.pyc
 .ipynb_checkpoints/
 .pytest_cache/
-
-# OS / editors
 .DS_Store
-.vscode/
-.idea/

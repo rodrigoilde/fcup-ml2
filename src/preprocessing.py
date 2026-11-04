@@ -1,45 +1,72 @@
-"""Signal pre-processing: loading, band-pass filtering, normalisation and fixed-length windows."""
+"""Raw audio -> multi-band waveform for the 1D CNN."""
+from functools import lru_cache
 
 import numpy as np
+from scipy import signal
 from scipy.io import wavfile
-from scipy.signal import butter, sosfiltfilt
 
-from .config import BANDPASS, HOP_SEC, SR, WINDOW_SEC
+from . import config
+
+CLIP = 20.0   # robust z-score limit: removes friction spikes and flattens the tallest S1/S2 peaks (<2 % of samples)
 
 
 def load_wav(path):
-    """Read a 16-bit WAV file as float32 in [-1, 1]. Returns (signal, sampling rate)."""
     sr, x = wavfile.read(path)
-    if x.dtype == np.int16:
-        x = x.astype(np.float32) / 32768.0
-    return x.astype(np.float32), sr
+    assert sr == config.SR_RAW, f"{path}: unexpected sampling rate {sr}"
+    return x.astype(np.float32) / 32768.0
 
 
-def bandpass(x, sr=SR, band=BANDPASS, order=4):
-    """Zero-phase Butterworth band-pass filter (forward-backward, so S1/S2 are not shifted in time)."""
-    sos = butter(order, band, btype="bandpass", fs=sr, output="sos")
-    return sosfiltfilt(sos, x).astype(np.float32)
+def downsample(x):
+    """4 kHz -> 2 kHz (resample_poly applies the anti-aliasing filter)."""
+    return signal.resample_poly(x, 1, config.SR_RAW // config.SR).astype(np.float32)
 
 
-def normalize(x):
-    """Z-score: zero mean, unit variance (removes differences in recording gain between stethoscopes)."""
-    return ((x - x.mean()) / (x.std() + 1e-8)).astype(np.float32)
+@lru_cache(maxsize=None)
+def _band_filters():
+    return [signal.butter(4, band, btype="bandpass", fs=config.SR, output="sos") for band in config.BANDS]
 
 
-def preprocess_recording(path, band=BANDPASS):
-    x, sr = load_wav(path)
-    if sr != SR:
-        raise ValueError(f"{path}: expected {SR} Hz, got {sr} Hz")
-    return normalize(bandpass(x, sr, band))
+def filterbank(x):
+    """(T,) signal at 2 kHz -> (T, n_bands). Zero-phase filtering keeps S1/S2 aligned across bands."""
+    return np.stack([signal.sosfiltfilt(sos, x) for sos in _band_filters()], axis=-1).astype(np.float32)
 
 
-def make_windows(x, sr=SR, window_sec=WINDOW_SEC, hop_sec=HOP_SEC):
-    """Split a signal into overlapping windows of fixed length -> array (n_windows, window_len).
+def robust_normalize(x):
+    """Per-channel robust z-score (median / MAD), then clip the rare spikes."""
+    med = np.median(x, axis=0)
+    mad = np.median(np.abs(x - med), axis=0) * 1.4826
+    return np.clip((x - med) / (mad + 1e-8), -CLIP, CLIP).astype(np.float32)
 
-    A signal shorter than one window is zero-padded at the end (does not happen in the public set,
-    where the shortest recording lasts 5.2 s, but may happen on new data)."""
-    win, hop = int(window_sec * sr), int(hop_sec * sr)
-    if len(x) < win:
-        x = np.pad(x, (0, win - len(x)))
-    starts = range(0, len(x) - win + 1, hop)
+
+def preprocess_cnn(path):
+    """Full CNN pre-processing of one recording: (T, 5) float32 at 2 kHz."""
+    return robust_normalize(filterbank(downsample(load_wav(path))))
+
+
+def load_cnn_inputs(recordings, cache=True):
+    """{recording name: (T, 5) float16 array}, cached on disk under cache/cnn/."""
+    out = {}
+    cache_dir = config.CACHE_DIR / "cnn"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for name, path in zip(recordings["recording"], recordings["wav"]):
+        f = cache_dir / f"{name}.npy"
+        if cache and f.exists():
+            out[name] = np.load(f)
+        else:
+            out[name] = preprocess_cnn(path).astype(np.float16)
+            if cache:
+                np.save(f, out[name])
+    return out
+
+
+def random_crop(x, win, rng):
+    start = rng.integers(0, len(x) - win + 1)
+    return x[start:start + win]
+
+
+def sliding_windows(x, win=config.WIN, hop=config.HOP):
+    """Overlapping windows covering the whole recording (the last one is aligned to the end)."""
+    starts = list(range(0, len(x) - win + 1, hop))
+    if starts[-1] != len(x) - win:
+        starts.append(len(x) - win)
     return np.stack([x[s:s + win] for s in starts])
