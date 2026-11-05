@@ -3,7 +3,7 @@
 Documento interno do grupo, atualizado a 3 nov 2026, antes do checkpoint de 5 nov.
 Entrega: 30 nov 2026, 23:59. Apresentações: 3 e 10 dez.
 
-O entregável é o `main.ipynb` (secções 0 a 7). Quando abaixo falamos em "secção X", é a secção desse notebook.
+O entregável é o `main.ipynb` (secções 1 a 8). Quando abaixo falamos em "secção X", é a secção desse notebook.
 
 ## 1. Divisão de trabalho
 
@@ -11,9 +11,9 @@ Quase todo o código está no `main.ipynb`. Fora dele só está `src/training.py
 
 | Membro | Responsável por | Secções do main |
 |---|---|---|
-| A | Regras do problema, métrica e regras de decisão, dados, divisão, exploração do áudio, consequências práticas | 1, 2, 3.1 a 3.4, 6.2, 7 |
-| B | CNN 1D (pré-processamento por bandas, arquitetura, treino) e `src/training.py` | 3.5, 4.1, 4.3, 5.1, 5.2, 6.1, 6.3 |
-| C | BiGRU multitarefa (log-mel, estados por frame, saída auxiliar) | 3.6, 4.2, 5.3, 6.4 |
+| A | Regras do problema, métrica e regras de decisão, dados, divisão, exploração do áudio, consequências práticas | 1, 2, 3 (exploração), 6, 7 |
+| B | CNN 1D (pré-processamento por bandas, arquitetura, treino) e `src/training.py` | 3 (entrada da CNN), 4, 5, 6 |
+| C | BiGRU multitarefa (log-mel, estados por frame, saída auxiliar) | 3 (entrada da RNN), 4, 5 |
 
 Cada um tem de conseguir explicar o projeto todo, porque o enunciado penaliza quem não souber. Antes de cada
 reunião, cada um lê as secções dos outros.
@@ -24,11 +24,11 @@ reunião, cada um lê as secções dos outros.
 
 | Tarefa | Estado |
 |---|---|
-| Visão geral dos dados (classes, campanhas, IDs ligados) | feito (secções 2.1 e 2.2) |
-| Divisão: teste fechado de 20% + CV de 5 folds, agrupada por criança e estratificada por sopro x campanha | feito (secção 2.3, `splits/splits.csv`) |
-| Métrica WA + matriz de confusão (linhas = previsto) + verificações (asserts) | feito (secção 1.2) |
-| Exploração do áudio só no conjunto de desenvolvimento | feito (secções 2.4 e 3.1 a 3.4) |
-| Agregação das gravações por paciente (média, máximo para Present) e regras de decisão (argmax, Bayes) | feito (secção 1.3) |
+| Visão geral dos dados (classes, campanhas, IDs ligados) | feito (secção 2) |
+| Divisão: teste fechado de 20% + CV de 5 folds, agrupada por criança e estratificada por sopro x campanha | feito (secção 2, `splits/splits.csv`) |
+| Métrica WA + matriz de confusão (linhas = previsto) + verificações (asserts) | feito (secção 1) |
+| Exploração do áudio só no conjunto de desenvolvimento | feito (secções 2 e 3) |
+| Agregação das gravações por paciente (média, máximo para Present) e regras de decisão (argmax, Bayes) | feito (secção 1) |
 | Consequências práticas (o que os números querem dizer num rastreio) | feito (secção 7) |
 | Melhorar a deteção de Unknown (limiares nos OOF, sinal de qualidade) | por fazer, é a prioridade |
 | Ensemble dos modelos dos 5 folds | por fazer |
@@ -64,19 +64,19 @@ que não escolhemos. Esta tabela vai servir de base à parte da implementação 
 
 | # | Decisão | Evidência | Alternativa que não escolhemos |
 |---|---|---|---|
-| 1 | Agrupar os splits por criança (juntando `Patient ID` e `Additional ID`) | 70 crianças aparecem com dois IDs, uma visita em cada campanha (secção 2.2) | Dividir só por `Patient ID`, o que punha a mesma criança no treino e no teste |
-| 2 | Estratificar por sopro x campanha | CC2014 tem 16% Present e CC2015 tem 21% (secção 2.1) | Estratificar só pelo sopro |
+| 1 | Agrupar os splits por criança (juntando `Patient ID` e `Additional ID`) | 70 crianças aparecem com dois IDs, uma visita em cada campanha (secção 2) | Dividir só por `Patient ID`, o que punha a mesma criança no treino e no teste |
+| 2 | Estratificar por sopro x campanha | CC2014 tem 16% Present e CC2015 tem 21% (secção 2) | Estratificar só pelo sopro |
 | 3 | Teste de 20% fechado + CV de 5 folds no resto | Só há 68 Unknown no total, por isso um único split de validação seria muito ruidoso | Um único train/val/test |
 | 4 | Explorar o áudio só no desenvolvimento | O enunciado proíbe usar o teste em decisões de pré-processamento | Explorar os 942 pacientes (a primeira versão fazia isto; corrigimos a 3 nov) |
-| 5 | Rótulos por gravação conforme o local | Em 54 de 143 Present (dev) o sopro não se ouve em todos os locais (secção 2.4) | Copiar o rótulo do paciente para todas as gravações |
-| 6 | 2 kHz + banco de 5 filtros entre 25 e 800 Hz | Na sístole, as Present têm 2,5 a 5 vezes mais potência entre 25 e 800 Hz e praticamente a mesma acima de 800 Hz; na gravação inteira quase não há diferença (secção 3.3) | Banda completa a 4 kHz |
+| 5 | Rótulos por gravação conforme o local | Em 54 de 143 Present (dev) o sopro não se ouve em todos os locais (secção 2) | Copiar o rótulo do paciente para todas as gravações |
+| 6 | 2 kHz + banco de 5 filtros entre 25 e 800 Hz | Na sístole, as Present têm 2,5 a 5 vezes mais potência entre 25 e 800 Hz e praticamente a mesma acima de 800 Hz; na gravação inteira quase não há diferença (secção 3) | Banda completa a 4 kHz |
 | 7 | CNN 1D sobre as bandas (e não CNN 2D sobre mel) | Bandas de Potes et al. (vencedores da PhysioNet 2016) e a análise do espectro; mantém a resolução temporal fina do S1/S2 | CNN 2D sobre mel-espectrograma (a escolha mais comum) |
-| 8 | Normalização robusta (mediana/MAD) + corte em 20 | Picos de fricção; o corte afeta no máximo 1,2% das amostras por banda (secção 3.5). Ainda não testámos | z-score simples |
-| 9 | Janelas de 4 s, receptive field de ~0,92 s | Ciclo cardíaco: mediana 0,58 s, p95 0,81 s; todas as gravações têm mais de 5 s (secções 2.4 e 3.1) | Gravação inteira com padding |
-| 10 | Saída auxiliar de segmentação na RNN (os .tsv só servem de alvo no treino) | Os sopros são quase sempre sistólicos; as Unknown têm 69% do tempo sem anotação, contra 41-45% (secção 3.1) | LSTM sobre MFCC; ou usar os .tsv como entrada (podem não vir nos dados ocultos) |
+| 8 | Normalização robusta (mediana/MAD) + corte em 20 | Picos de fricção; o corte apanha 0,72% das amostras (secção 3). Ainda não testámos se ajuda | z-score simples |
+| 9 | Janelas de 4 s, receptive field de ~0,92 s | Ciclo cardíaco: mediana 0,58 s, p95 0,81 s; todas as gravações têm mais de 5 s (secções 2 e 3) | Gravação inteira com padding |
+| 10 | Saída auxiliar de segmentação na RNN (os .tsv só servem de alvo no treino) | Os sopros são quase sempre sistólicos; as Unknown têm 69% do tempo sem anotação, contra 41-45% (secção 3) | LSTM sobre MFCC; ou usar os .tsv como entrada (podem não vir nos dados ocultos) |
 | 11 | GRU em vez de LSTM | ~2000 gravações de treino por fold, por isso menos parâmetros | LSTM |
 | 12 | Early stopping no WA por paciente (callback nosso) | É a métrica com que somos avaliados; a `val_loss` é calculada por crop | `val_loss` |
-| 13 | CE sem pesos + P(Present) = máximo sobre os locais + regra de Bayes (`argmax w_c p_c`) | O denominador do WA é constante, logo a decisão ótima é `argmax w_c p_c`. Confirmado: a E2 ganha à E1 nos 5 folds (secções 6.1 e 6.2) | CE com class weights + argmax |
+| 13 | CE sem pesos + P(Present) = máximo sobre os locais + regra de Bayes (`argmax w_c p_c`) | O denominador do WA é constante, logo a decisão ótima é `argmax w_c p_c`. Confirmado: a E2 ganha à E1 nos 5 folds (secção 6) | CE com class weights + argmax |
 | 14 | Modelo final = ensemble dos 5 modelos dos folds | Cada um tem um early stopping honesto, e assim não é preciso treinar outra vez sem validação | Treinar de novo em todo o dev com um número fixo de épocas |
 
 ## 4. Resultados intermédios (CV, conjunto de desenvolvimento, por paciente)

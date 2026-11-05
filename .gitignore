@@ -1,6 +1,6 @@
 # arrays pré-processados, o main.ipynb volta a criá-los
 cache/
-# modelos treinados; só guardamos o do smoke run da RNN, que a secção 5.3 usa
+# modelos treinados; só guardamos o do smoke run da RNN, que a secção 5 usa
 results/models/*
 !results/models/rnn_smoke_fold0.keras
 __pycache__/

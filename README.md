@@ -23,7 +23,7 @@ problema:
 5. Treino e validação
 6. Avaliação e métricas
 7. Consequências práticas
-8. Estado e próximos passos
+8. Próximos passos
 
 Fora do notebook só está `src/training.py`, com a maquinaria de treino do Keras (o dataset de crops, a inferência por
 janelas, o callback de early stopping e o ciclo de CV). A métrica e as regras de decisão são definidas no notebook e
@@ -58,9 +58,9 @@ Para usar outra pasta, basta definir a variável de ambiente `CIRCOR_DIR`.
 jupyter notebook main.ipynb
 ```
 
-Depois é só correr as células por ordem. As verificações que antes estavam em testes à parte (a métrica contra a
-fórmula do enunciado, os rótulos por local, os pares de IDs ligados, a divisão e as regras de decisão) são agora
-asserts no próprio notebook, logo a seguir a cada função. O `splits/splits.csv` vem no repositório, e o notebook
+Depois é só correr as células por ordem. As verificações que antes estavam em testes à parte (a métrica num exemplo
+feito à mão, as regras de decisão, os pares de IDs ligados, a divisão e os rótulos por local) são agora asserts no
+próprio notebook, junto do código que verificam. O `splits/splits.csv` vem no repositório, e o notebook
 volta a calcular a divisão e confirma que dá exatamente o mesmo. Se o ficheiro não existir, é o notebook que o cria.
 
 Na célula de setup do `main.ipynb` há dois interruptores:
@@ -72,7 +72,7 @@ Na célula de setup do `main.ipynb` há dois interruptores:
 
 Com os resultados guardados, o notebook corre em poucos minutos. Os arrays pré-processados ficam em `cache/` e os
 modelos treinados em `results/models/`. As duas pastas são criadas automaticamente e não estão no git. A exceção é o
-modelo do smoke run da RNN, que a secção 5.3 do notebook precisa.
+modelo do smoke run da RNN, que a secção 5 do notebook precisa.
 
 ## Protocolo de avaliação
 
