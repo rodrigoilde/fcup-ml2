@@ -1,8 +1,8 @@
-# pre-processed arrays (re-created automatically by the notebooks)
+# arrays pré-processados, o main.ipynb volta a criá-los
 cache/
-# trained weights (re-created by notebooks 03/04)
-results/models/
+# modelos treinados; só guardamos o do smoke run da RNN, que a secção 5.3 usa
+results/models/*
+!results/models/rnn_smoke_fold0.keras
 __pycache__/
 .ipynb_checkpoints/
-.pytest_cache/
 .DS_Store
